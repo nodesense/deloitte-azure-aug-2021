@@ -1,0 +1,65 @@
+source(output(
+		movieId as integer,
+		title as string,
+		genres as string
+	),
+	allowSchemaDrift: true,
+	validateSchema: false,
+	ignoreNoFilesFound: false,
+	format: 'parquet') ~> MovieParDS
+source(output(
+		userId as short,
+		movieId as integer,
+		rating as double,
+		timestamp as integer
+	),
+	allowSchemaDrift: true,
+	validateSchema: false,
+	ignoreNoFilesFound: false,
+	format: 'parquet') ~> RatingParquet
+MovieParDS select(mapColumn(
+		movieId,
+		title
+	),
+	skipDuplicateMapInputs: true,
+	skipDuplicateMapOutputs: true) ~> DropGenres
+RatingParquet select(mapColumn(
+		userId,
+		movieId,
+		rating
+	),
+	skipDuplicateMapInputs: true,
+	skipDuplicateMapOutputs: true) ~> DropTimeStamp
+DropTimeStamp filter(rating >= 1.0) ~> RatingGTE1
+DropGenres, RenameAgg join(DropGenres@movieId == RenameAgg@movieId,
+	joinType:'inner',
+	broadcast: 'auto')~> JoinMoviesRating
+JoinMoviesRating sort(desc(avg_rating, true)) ~> SortByRating
+SortByRating select(mapColumn(
+		movieId = DropGenres@movieId,
+		title,
+		avg_rating,
+		total_ratings
+	),
+	skipDuplicateMapInputs: true,
+	skipDuplicateMapOutputs: true) ~> DropRatingMovieId
+RatingGTE1 aggregate(groupBy(movieId),
+	rating = avg(toDouble(rating)),
+		userId = count(userId)) ~> AggAvgRatingCountRating
+AggAvgRatingCountRating select(mapColumn(
+		movieId,
+		avg_rating = rating,
+		total_ratings = userId
+	),
+	skipDuplicateMapInputs: true,
+	skipDuplicateMapOutputs: true) ~> RenameAgg
+DropRatingMovieId sink(allowSchemaDrift: true,
+	validateSchema: false,
+	format: 'parquet',
+	fileSystem: 'analytics',
+	folderPath: 'popular-movies',
+	truncate: true,
+	compressionCodec: 'snappy',
+	umask: 0022,
+	skipDuplicateMapInputs: true,
+	skipDuplicateMapOutputs: true) ~> MovieRatingJoinSink
